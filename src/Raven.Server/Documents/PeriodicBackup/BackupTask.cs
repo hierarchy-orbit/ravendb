@@ -281,7 +281,7 @@ namespace Raven.Server.Documents.PeriodicBackup
 
                     // save the backup status
                     AddInfo("Saving backup status");
-                    SaveBackupStatus(runningBackupStatus, _database, _logger);
+                    SaveBackupStatus(runningBackupStatus, _database, _logger, _backupResult);
                 }
             }
         }
@@ -741,11 +741,8 @@ namespace Raven.Server.Documents.PeriodicBackup
 
         private void AddInfo(string message)
         {
-            lock (this)
-            {
-                _backupResult.AddInfo(message);
-                _onProgress.Invoke(_backupResult.Progress);
-            }
+            _backupResult.AddInfo(message);
+            _onProgress.Invoke(_backupResult.Progress);
         }
 
         private InternalBackupResult CreateBackup(
@@ -857,7 +854,7 @@ namespace Raven.Server.Documents.PeriodicBackup
             _database.NotificationCenter.Dismiss(id);
         }
 
-        public static void SaveBackupStatus(PeriodicBackupStatus status, DocumentDatabase documentDatabase, Logger logger)
+        public static void SaveBackupStatus(PeriodicBackupStatus status, DocumentDatabase documentDatabase, Logger logger, BackupResult backupResult)
         {
 
             try
@@ -879,6 +876,8 @@ namespace Raven.Server.Documents.PeriodicBackup
 
                 if (logger.IsOperationsEnabled)
                     logger.Operations(message, e);
+
+                backupResult?.AddError($"{message}{Environment.NewLine}{e}");
             }
         }
 

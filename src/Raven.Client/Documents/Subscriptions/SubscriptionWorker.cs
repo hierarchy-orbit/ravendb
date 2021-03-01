@@ -74,9 +74,6 @@ namespace Raven.Client.Documents.Subscriptions
 
         public void Dispose(bool waitForSubscriptionTask)
         {
-            if (_disposed)
-                return;
-
             var dispose = DisposeAsync(waitForSubscriptionTask);
             if (dispose.IsCompletedSuccessfully)
                 return;
@@ -91,11 +88,11 @@ namespace Raven.Client.Documents.Subscriptions
 
         public async ValueTask DisposeAsync(bool waitForSubscriptionTask)
         {
+            if (_disposed)
+                return;
+
             try
             {
-                if (_disposed)
-                    return;
-
                 _disposed = true;
                 _processingCts?.Cancel();
 
@@ -303,6 +300,7 @@ namespace Raven.Client.Documents.Subscriptions
                 {
                     case TcpConnectionStatus.Ok:
                         return reply.Version;
+
                     case TcpConnectionStatus.AuthorizationFailed:
                         throw new AuthorizationException($"Cannot access database {_dbName} because " + reply.Message);
                     case TcpConnectionStatus.TcpVersionMismatch:
@@ -346,6 +344,7 @@ namespace Raven.Client.Documents.Subscriptions
             {
                 case SubscriptionConnectionServerMessage.ConnectionStatus.Accepted:
                     break;
+
                 case SubscriptionConnectionServerMessage.ConnectionStatus.InUse:
                     throw new SubscriptionInUseException(
                         $"Subscription With Id '{_options.SubscriptionName}' cannot be opened, because it's in use and the connection strategy is {_options.Strategy}");
@@ -361,6 +360,7 @@ namespace Raven.Client.Documents.Subscriptions
                         $"Subscription With Id '{_options.SubscriptionName}' cannot be opened, because it does not exist. " + connectionStatus.Exception);
                 case SubscriptionConnectionServerMessage.ConnectionStatus.Redirect:
                     var appropriateNode = connectionStatus.Data?[nameof(SubscriptionConnectionServerMessage.SubscriptionRedirectData.RedirectedTag)]?.ToString();
+                    var currentNode = connectionStatus.Data?[nameof(SubscriptionConnectionServerMessage.SubscriptionRedirectData.CurrentTag)]?.ToString();
                     var rawReasons = connectionStatus.Data?[nameof(SubscriptionConnectionServerMessage.SubscriptionRedirectData.Reasons)];
                     Dictionary<string, string> reasonsDictionary = new Dictionary<string, string>();
                     if (rawReasons != null && rawReasons is BlittableJsonReaderArray rawReasonsArray)
@@ -379,7 +379,7 @@ namespace Raven.Client.Documents.Subscriptions
                         }
                     }
                     throw new SubscriptionDoesNotBelongToNodeException(
-                        $"Subscription With Id '{_options.SubscriptionName}' cannot be processed by current node, it will be redirected to {appropriateNode}]{Environment.NewLine}Reasons:{string.Join(Environment.NewLine, reasonsDictionary.Select(x => $"{x.Key}:{x.Value}"))}",
+                        $"Subscription With Id '{_options.SubscriptionName}' cannot be processed by current node '{currentNode}', it will be redirected to {appropriateNode}]{Environment.NewLine}Reasons:{string.Join(Environment.NewLine, reasonsDictionary.Select(x => $"{x.Key}:{x.Value}"))}",
                         inner: new SubscriptionDoesNotBelongToNodeException(connectionStatus.Exception),
                         appropriateNode,
                         reasonsDictionary);
@@ -526,15 +526,19 @@ namespace Raven.Client.Documents.Subscriptions
                     case SubscriptionConnectionServerMessage.MessageType.Data:
                         incomingBatch.Add(receivedMessage);
                         break;
+
                     case SubscriptionConnectionServerMessage.MessageType.Includes:
                         includes.Add(receivedMessage.Includes);
                         break;
+
                     case SubscriptionConnectionServerMessage.MessageType.CounterIncludes:
                         counterIncludes.Add((receivedMessage.CounterIncludes, receivedMessage.IncludedCounterNames));
                         break;
+
                     case SubscriptionConnectionServerMessage.MessageType.EndOfBatch:
                         endOfBatch = true;
                         break;
+
                     case SubscriptionConnectionServerMessage.MessageType.Confirm:
                         var onAfterAcknowledgment = AfterAcknowledgment;
                         if (onAfterAcknowledgment != null)
@@ -542,12 +546,15 @@ namespace Raven.Client.Documents.Subscriptions
                         incomingBatch.Clear();
                         batch.Items.Clear();
                         break;
+
                     case SubscriptionConnectionServerMessage.MessageType.ConnectionStatus:
                         AssertConnectionState(receivedMessage);
                         break;
+
                     case SubscriptionConnectionServerMessage.MessageType.Error:
                         ThrowSubscriptionError(receivedMessage);
                         break;
+
                     default:
                         ThrowInvalidServerResponse(receivedMessage);
                         break;
@@ -615,7 +622,7 @@ namespace Raven.Client.Documents.Subscriptions
 
         private async Task RunSubscriptionAsync()
         {
-            while (_processingCts.Token.IsCancellationRequested == false)
+            while (_processingCts.IsCancellationRequested == false)
             {
                 try
                 {
@@ -635,7 +642,7 @@ namespace Raven.Client.Documents.Subscriptions
                     _recentExceptions.Enqueue(ex);
                     try
                     {
-                        if (_processingCts.Token.IsCancellationRequested)
+                        if (_processingCts.IsCancellationRequested)
                         {
                             if (_disposed == false)
                                 throw;
@@ -656,11 +663,17 @@ namespace Raven.Client.Documents.Subscriptions
                                 var reqEx = _store.GetRequestExecutor(_dbName);
                                 var curTopology = reqEx.TopologyNodes;
                                 var nextNodeIndex = (_forcedTopologyUpdateAttempts++) % curTopology.Count;
-                                _redirectNode = curTopology[nextNodeIndex];
-                                if (_logger.IsInfoEnabled)
+                                try
                                 {
-                                    _logger.Info(
-                                        $"Subscription '{_options.SubscriptionName}'. Will modify redirect node from null to {_redirectNode.ClusterTag}", ex);
+                                    (_, _redirectNode) = await reqEx.GetRequestedNode(curTopology[nextNodeIndex].ClusterTag).ConfigureAwait(false);
+                                    if (_logger.IsInfoEnabled)
+                                        _logger.Info($"Subscription '{_options.SubscriptionName}'. Will modify redirect node from null to {_redirectNode.ClusterTag}", ex);
+                                }
+                                catch (Exception e)
+                                {
+                                    // will let topology to decide
+                                    if (_logger.IsInfoEnabled)
+                                        _logger.Info($"Subscription '{_options.SubscriptionName}'. Could not select the redirect node will keep it null.", e);
                                 }
                             }
 
@@ -725,6 +738,7 @@ namespace Raven.Client.Documents.Subscriptions
                                         new InvalidOperationException($"Could not redirect to {se.AppropriateNode}, because it was not found in local topology, even after retrying"));
 
                     return true;
+
                 case NodeIsPassiveException e:
                     {
                         // if we failed to talk to a node, we'll forget about it and let the topology to
@@ -734,12 +748,14 @@ namespace Raven.Client.Documents.Subscriptions
                     }
                 case SubscriptionChangeVectorUpdateConcurrencyException _:
                     return true;
+
                 case SubscriptionClosedException sce:
                     if (sce.CanReconnect)
                         return true;
 
                     _processingCts.Cancel();
                     return false;
+
                 case SubscriptionInUseException _:
                 case SubscriptionDoesNotExistException _:
                 case SubscriptionInvalidStateException _:
@@ -750,6 +766,7 @@ namespace Raven.Client.Documents.Subscriptions
                 case RavenException _:
                     _processingCts.Cancel();
                     return false;
+
                 default:
                     AssertLastConnectionFailure();
                     return true;

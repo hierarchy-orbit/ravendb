@@ -885,7 +885,7 @@ namespace Raven.Server.Documents
             }
         }
 
-        public IEnumerable<Document> GetDocuments(DocumentsOperationContext context, List<Slice> ids, long start, long take, Reference<int> totalCount)
+        public IEnumerable<Document> GetDocuments(DocumentsOperationContext context, IEnumerable<Slice> ids, long start, long take, Reference<int> totalCount)
         {
             var table = new Table(DocsSchema, context.Transaction.InnerTransaction);
 
@@ -921,7 +921,7 @@ namespace Raven.Server.Documents
             return GetDocuments(context, listOfIds, start, take, totalCount);
         }
 
-        public IEnumerable<Document> GetDocuments(DocumentsOperationContext context, List<Slice> ids, string collection, long start, long take, Reference<int> totalCount)
+        public IEnumerable<Document> GetDocuments(DocumentsOperationContext context, IEnumerable<Slice> ids, string collection, long start, long take, Reference<int> totalCount)
         {
             foreach (var doc in GetDocuments(context, ids, start, take, totalCount))
             {
@@ -1515,6 +1515,11 @@ namespace Raven.Server.Documents
                 {
                     collectionName = ExtractCollectionName(context, local.Tombstone.Collection);
                 }
+                else if (local.Tombstone.Collection.Equals(collectionName.Name) == false)
+                {
+                    // ensure the table for the tombstones is created
+                    ExtractCollectionName(context, collectionName.Name);
+                }
 
                 var tombstoneTable = context.Transaction.InnerTransaction.OpenTable(TombstonesSchema,
                     collectionName.GetTableName(CollectionTableType.Tombstones));
@@ -1624,7 +1629,7 @@ namespace Raven.Server.Documents
 
                     if (shouldVersion)
                     {
-                        if (DocumentDatabase.DocumentsStorage.RevisionsStorage.ShouldVersionOldDocument(flags, local.Document.Data))
+                        if (DocumentDatabase.DocumentsStorage.RevisionsStorage.ShouldVersionOldDocument(context, flags, local.Document.Data, local.Document.ChangeVector, collectionName))
                         {
                             DocumentDatabase.DocumentsStorage.RevisionsStorage.Put(context, id, local.Document.Data, flags | DocumentFlags.HasRevisions, NonPersistentDocumentFlags.None,
                                 local.Document.ChangeVector, local.Document.LastModified.Ticks, configuration, collectionName);
@@ -2208,15 +2213,19 @@ namespace Raven.Server.Documents
                 // case 4: incoming change vector A:10, B:10        -> already merged   (original: already merged, after: already merged)
 
                 // our local change vector is     A:11, B:10
-                // case 1: incoming change vector A:10, B:10, C:10 -> already merged        (original: conflict, after: already merged)        
+                // case 1: incoming change vector A:10, B:10, C:10 -> conflict              (original: conflict, after: already merged)        
                 // case 2: incoming change vector A:10, B:11, C:10 -> conflict              (original: conflict, after: conflict)
                 // case 3: incoming change vector A:11, B:10, C:10 -> update                (original: update, after: already merged)
                 // case 4: incoming change vector A:11, B:12, C:10 -> update                (original: conflict, after: update)
 
+                var original = ChangeVectorUtils.GetConflictStatus(remote, local);
                 TryRemoveUnusedIds(ref remote);
                 skipValidation = TryRemoveUnusedIds(ref local);
+                var after = ChangeVectorUtils.GetConflictStatus(remote, local);
 
-                return ChangeVectorUtils.GetConflictStatus(remote, local);
+                if (after == ConflictStatus.AlreadyMerged)
+                    return original;
+                return after;
             }
 
             return originalStatus;

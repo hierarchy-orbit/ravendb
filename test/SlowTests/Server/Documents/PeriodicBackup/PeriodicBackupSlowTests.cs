@@ -14,7 +14,6 @@ using FastTests.Server.Basic.Entities;
 using Newtonsoft.Json;
 using Raven.Client;
 using Raven.Client.Documents;
-using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Operations;
 using Raven.Client.Documents.Operations.Backups;
 using Raven.Client.Documents.Operations.CompareExchange;
@@ -693,7 +692,6 @@ namespace SlowTests.Server.Documents.PeriodicBackup
             var backupPath = NewDataPath(suffix: "BackupFolder");
             using (var store = GetDocumentStore())
             {
-                
                 var record = store.Maintenance.Server.Send(new GetDatabaseRecordOperation(store.Database));
                 record.DocumentsCompression = new DocumentsCompressionConfiguration(true, "Users");
                 store.Maintenance.Server.Send(new UpdateDatabaseOperation(record, record.Etag));
@@ -764,7 +762,7 @@ namespace SlowTests.Server.Documents.PeriodicBackup
             {
                 var baseline = DateTime.Today;
                 await store.TimeSeries.SetRawPolicyAsync("users", TimeValue.FromYears(1));
-                
+
                 using (var session = store.OpenAsyncSession())
                 {
                     await session.StoreAsync(new User
@@ -788,7 +786,7 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                     {
                         FolderPath = backupPath
                     },
-                    IncrementalBackupFrequency = "* * * * *" //every minute
+                    FullBackupFrequency = "0 0 1 1 *" // at 00:00 on 1st January
                 };
 
                 var backupTaskId = (await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config))).TaskId;
@@ -989,7 +987,7 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                         ["Users"] = new TimeSeriesCollectionConfiguration
                         {
                             RawPolicy = new RawTimeSeriesPolicy(TimeValue.FromHours(96)),
-                            Policies = new List<TimeSeriesPolicy> {new TimeSeriesPolicy("BySecond",TimeValue.FromSeconds(1))}
+                            Policies = new List<TimeSeriesPolicy> { new TimeSeriesPolicy("BySecond", TimeValue.FromSeconds(1)) }
                         },
                     },
                     PolicyCheckFrequency = TimeSpan.FromSeconds(1)
@@ -1008,13 +1006,14 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                 var operation = new GetPeriodicBackupStatusOperation(backupTaskId);
                 await WaitForValueAsync(async () =>
                 {
-                    var status =  (await store.Maintenance.SendAsync(operation)).Status;
+                    var status = (await store.Maintenance.SendAsync(operation)).Status;
                     return status != null;
                 }, true);
 
                 await RestoreAndCheckTimeSeriesConfiguration(store, backupPath, timeSeriesConfiguration);
             }
         }
+
         [Fact, Trait("Category", "Smuggler")]
         public async Task RestoreSnapshotWithTimeSeriesCollectionConfiguration_WhenConfigurationInIncrementalSnapshot()
         {
@@ -1027,7 +1026,7 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                     await session.StoreAsync(entity);
                     await session.SaveChangesAsync();
                 }
-                
+
                 var config = new PeriodicBackupConfiguration
                 {
                     BackupType = BackupType.Snapshot,
@@ -1043,7 +1042,7 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                 long? statusLastEtag = null;
                 await WaitForValueAsync(async () =>
                 {
-                    var status =  (await store.Maintenance.SendAsync(operation)).Status;
+                    var status = (await store.Maintenance.SendAsync(operation)).Status;
                     if (status == null)
                         return false;
                     statusLastEtag = status.LastEtag;
@@ -1057,7 +1056,7 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                         ["Users"] = new TimeSeriesCollectionConfiguration
                         {
                             RawPolicy = new RawTimeSeriesPolicy(TimeValue.FromHours(96)),
-                            Policies = new List<TimeSeriesPolicy> {new TimeSeriesPolicy("BySecond",TimeValue.FromSeconds(1))}
+                            Policies = new List<TimeSeriesPolicy> { new TimeSeriesPolicy("BySecond", TimeValue.FromSeconds(1)) }
                         },
                     },
                     PolicyCheckFrequency = TimeSpan.FromSeconds(1)
@@ -1076,10 +1075,10 @@ namespace SlowTests.Server.Documents.PeriodicBackup
 
                 await WaitForValueAsync(async () =>
                 {
-                    var status =  (await store.Maintenance.SendAsync(operation)).Status;
+                    var status = (await store.Maintenance.SendAsync(operation)).Status;
                     return status != null && status.LastEtag > statusLastEtag;
                 }, true);
-                
+
                 await RestoreAndCheckTimeSeriesConfiguration(store, backupPath, timeSeriesConfiguration);
             }
         }
@@ -1087,7 +1086,7 @@ namespace SlowTests.Server.Documents.PeriodicBackup
         private async Task RestoreAndCheckTimeSeriesConfiguration(IDocumentStore store, string backupPath, TimeSeriesConfiguration timeSeriesConfiguration)
         {
             string restoredDatabaseName = $"{store.Database}-restored";
-            using (RestoreDatabase(store, new RestoreBackupConfiguration {BackupLocation = Directory.GetDirectories(backupPath).First(), DatabaseName = restoredDatabaseName}))
+            using (RestoreDatabase(store, new RestoreBackupConfiguration { BackupLocation = Directory.GetDirectories(backupPath).First(), DatabaseName = restoredDatabaseName }))
             {
                 var db = await store.Maintenance.Server.SendAsync(new GetDatabaseRecordOperation(restoredDatabaseName));
                 var actual = db.TimeSeries;
@@ -1586,18 +1585,20 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                 var config = new PeriodicBackupConfiguration
                 {
                     LocalSettings = new LocalSettings { FolderPath = backupPath },
-                    IncrementalBackupFrequency = "* * * * *" //every minute
+                    IncrementalBackupFrequency = "0 0 1 1 *"
                 };
 
                 var backupTaskId = (await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config))).TaskId;
-                await store.Maintenance.SendAsync(new StartBackupOperation(true, backupTaskId));
+                var opId = await RunBackupOperationAndAssertCompleted(store, isFullBackup: true, backupTaskId);
+
                 var operation = new GetPeriodicBackupStatusOperation(backupTaskId);
+                long? lastEtag = 1;
                 var value = WaitForValue(() =>
                 {
                     var status = store.Maintenance.Send(operation).Status;
                     return status?.LastEtag;
                 }, 1);
-                Assert.Equal(1, value);
+                Assert.True(1 == value, BackupResultMessages());
 
                 using (var session = store.OpenAsyncSession())
                 {
@@ -1605,10 +1606,10 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                     await session.SaveChangesAsync();
                 }
 
-                var lastEtag = store.Maintenance.Send(new GetStatisticsOperation()).LastDocEtag;
-                await store.Maintenance.SendAsync(new StartBackupOperation(false, backupTaskId));
+                lastEtag = store.Maintenance.Send(new GetStatisticsOperation()).LastDocEtag;
+                opId = await RunBackupOperationAndAssertCompleted(store, isFullBackup: false, backupTaskId);
                 value = WaitForValue(() => store.Maintenance.Send(operation).Status.LastEtag, lastEtag);
-                Assert.Equal(lastEtag, value);
+                Assert.True(lastEtag == value, BackupResultMessages());
 
                 string backupFolder = Directory.GetDirectories(backupPath).OrderBy(Directory.GetCreationTime).Last();
                 var lastBackupToRestore = Directory.GetFiles(backupFolder).Where(BackupUtils.IsBackupFile)
@@ -1622,9 +1623,10 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                 }
 
                 lastEtag = store.Maintenance.Send(new GetStatisticsOperation()).LastDocEtag;
-                await store.Maintenance.SendAsync(new StartBackupOperation(false, backupTaskId));
+                opId = await RunBackupOperationAndAssertCompleted(store, isFullBackup: false, backupTaskId);
+
                 value = WaitForValue(() => store.Maintenance.Send(operation).Status.LastEtag, lastEtag);
-                Assert.Equal(lastEtag, value);
+                Assert.True(lastEtag == value, BackupResultMessages());
 
                 var databaseName = GetDatabaseName() + "restore";
 
@@ -1648,7 +1650,23 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                         Assert.Null(mediocreUser2);
                     }
                 }
+
+                string BackupResultMessages()
+                {
+                    var backupOperation = store.Maintenance.Send(new GetOperationStateOperation(opId));
+                    var backupResult = backupOperation.Result as BackupResult;
+                    Assert.NotNull(backupResult);
+                    return $"Expected etag: {lastEtag}, backupResult:{Environment.NewLine}{string.Join(Environment.NewLine, backupResult.Messages)}";
+                }
             }
+        }
+
+        private static async Task<long> RunBackupOperationAndAssertCompleted(DocumentStore store, bool isFullBackup, long taskId)
+        {
+            var op = await store.Maintenance.SendAsync(new StartBackupOperation(isFullBackup, taskId));
+            await op.WaitForCompletionAsync(TimeSpan.FromMinutes(1));
+
+            return op.Id;
         }
 
         [Fact]
@@ -2036,8 +2054,8 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                 }))
                 {
                     var stats = await store.Maintenance.ForDatabase(databaseName).SendAsync(new GetStatisticsOperation());
-                    Assert.Equal(1,stats.CountOfDocuments);
-                    Assert.Equal(0,stats.CountOfTimeSeriesSegments);
+                    Assert.Equal(1, stats.CountOfDocuments);
+                    Assert.Equal(0, stats.CountOfTimeSeriesSegments);
                 }
             }
         }
@@ -2098,8 +2116,8 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                 }))
                 {
                     var stats = await store.Maintenance.ForDatabase(databaseName).SendAsync(new GetStatisticsOperation());
-                    Assert.Equal(1,stats.CountOfDocuments);
-                    Assert.Equal(1,stats.CountOfTimeSeriesSegments);
+                    Assert.Equal(1, stats.CountOfDocuments);
+                    Assert.Equal(1, stats.CountOfTimeSeriesSegments);
 
                     using (var session = store.OpenAsyncSession(databaseName))
                     {
@@ -2107,7 +2125,6 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                         Assert.NotNull(user);
                         Assert.Null(await session.TimeSeriesFor("users/1", "Heartrate").GetAsync());
                     }
-
                 }
             }
         }
@@ -2265,7 +2282,7 @@ namespace SlowTests.Server.Documents.PeriodicBackup
             Assert.Equal(databaseLastEtag, backupLastEtag);
         }
 
-        private void RunBackup(long taskId, DocumentDatabase documentDatabase, bool isFullBackup, DocumentStore store)
+        internal static void RunBackup(long taskId, DocumentDatabase documentDatabase, bool isFullBackup, DocumentStore store, OperationStatus opStatus = OperationStatus.Completed)
         {
             var periodicBackupRunner = documentDatabase.PeriodicBackupRunner;
             var op = periodicBackupRunner.StartBackupTask(taskId, isFullBackup);
@@ -2273,9 +2290,9 @@ namespace SlowTests.Server.Documents.PeriodicBackup
             {
                 var status = store.Maintenance.Send(new GetOperationStateOperation(op)).Status;
                 return status;
-            }, OperationStatus.Completed);
+            }, opStatus);
 
-            Assert.Equal(OperationStatus.Completed, value);
+            Assert.Equal(opStatus, value);
         }
 
         private static string GetBackupPath(IDocumentStore store, long backTaskId, bool incremental = true)
@@ -2321,6 +2338,152 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                     File.SetAttributes(file, attributes);
                 }
             });
+        }
+
+        internal static string PrintBackupStatus(PeriodicBackupStatus status)
+        {
+            var sb = new StringBuilder();
+            if (status == null)
+                return $"{nameof(PeriodicBackupStatus)} is null";
+
+            var isFull = status.IsFull ? "a full" : "an incremental";
+            sb.AppendLine($"{nameof(PeriodicBackupStatus)} of backup task '{status.TaskId}', executed {isFull} '{status.BackupType}' on node '{status.NodeTag}' in '{status.DurationInMs}' ms.");
+            sb.AppendLine("Debug Info: ");
+            sb.AppendLine($"{nameof(PeriodicBackupStatus.LastDatabaseChangeVector)}: '{status.LastDatabaseChangeVector}'");
+            sb.AppendLine($"{nameof(PeriodicBackupStatus.LastEtag)}: {status.LastEtag}'");
+            sb.AppendLine($"{nameof(PeriodicBackupStatus.LastOperationId)}: '{status.LastOperationId}'");
+            sb.AppendLine($"{nameof(PeriodicBackupStatus.LastRaftIndex)}: '{status.LastRaftIndex}'");
+            sb.AppendLine($"{nameof(PeriodicBackupStatus.LastFullBackupInternal)}: '{status.LastFullBackupInternal}'");
+            sb.AppendLine($"{nameof(PeriodicBackupStatus.LastIncrementalBackupInternal)}: '{status.LastIncrementalBackupInternal}'");
+            sb.AppendLine($"{nameof(PeriodicBackupStatus.LastFullBackup)}: '{status.LastFullBackup}'");
+            sb.AppendLine($"{nameof(PeriodicBackupStatus.LastIncrementalBackup)}: '{status.LastIncrementalBackup}'");
+            sb.AppendLine();
+
+            if (status.Error == null && string.IsNullOrEmpty(status.LocalBackup?.Exception))
+            {
+                sb.AppendLine("There were no errors.");
+            }
+            else
+            {
+                sb.AppendLine("There were the following errors during backup task execution:");
+                if (status.Error != null)
+                {
+                    sb.AppendLine($"{nameof(PeriodicBackupStatus)}.{nameof(PeriodicBackupStatus.Error)}: ");
+                    sb.AppendLine(status.Error.Exception);
+                }
+
+                if (string.IsNullOrEmpty(status.LocalBackup?.Exception) == false)
+                {
+                    sb.AppendLine($"{nameof(PeriodicBackupStatus)}.{nameof(PeriodicBackupStatus.LocalBackup)}.{nameof(PeriodicBackupStatus.LocalBackup.Exception)}: ");
+                    sb.AppendLine(status.LocalBackup?.Exception);
+                }
+            }
+
+            sb.AppendLine();
+            sb.AppendLine("Backup upload status:");
+
+            if (status.UploadToAzure == null)
+            {
+                sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToAzure)} of backup task '{status.TaskId}' is null.");
+            }
+            else if (status.UploadToAzure.Skipped)
+            {
+                sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToAzure)} of backup task '{status.TaskId}' was skipped.");
+            }
+            else
+            {
+                if (string.IsNullOrEmpty(status.UploadToAzure.Exception) == false)
+                {
+                    sb.AppendLine($"{nameof(PeriodicBackupStatus)}.{nameof(PeriodicBackupStatus.UploadToAzure)}.{nameof(PeriodicBackupStatus.UploadToAzure.Exception)}:");
+                    sb.AppendLine(status.UploadToAzure?.Exception);
+                }
+                else
+                {
+                    sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToAzure)} of backup task '{status.TaskId}', ran successfully in '{status.UploadToAzure.UploadProgress.UploadTimeInMs}' ms, size: '{status.UploadToAzure.UploadProgress.TotalInBytes}' bytes.");
+                }
+            }
+            if (status.UploadToFtp == null)
+            {
+                sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToFtp)} of backup task '{status.TaskId}' is null.");
+            }
+            else if (status.UploadToFtp.Skipped)
+            {
+                sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToFtp)} of backup task '{status.TaskId}' was skipped.");
+            }
+            else
+            {
+                if (string.IsNullOrEmpty(status.UploadToFtp.Exception) == false)
+                {
+                    sb.AppendLine($"{nameof(PeriodicBackupStatus)}.{nameof(PeriodicBackupStatus.UploadToFtp)}.{nameof(PeriodicBackupStatus.UploadToFtp.Exception)}:");
+                    sb.AppendLine(status.UploadToFtp?.Exception);
+                }
+                else
+                {
+                    sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToFtp)} of backup task '{status.TaskId}', ran successfully in '{status.UploadToFtp.UploadProgress.UploadTimeInMs}' ms, size: '{status.UploadToFtp.UploadProgress.TotalInBytes}' bytes.");
+                }
+            }
+            if (status.UploadToGlacier == null)
+            {
+                sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToGlacier)} of backup task '{status.TaskId}' is null.");
+            }
+            else if (status.UploadToGlacier.Skipped)
+            {
+                sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToGlacier)} of backup task '{status.TaskId}' was skipped.");
+            }
+            else
+            {
+                if (string.IsNullOrEmpty(status.UploadToGlacier.Exception) == false)
+                {
+                    sb.AppendLine($"{nameof(PeriodicBackupStatus)}.{nameof(PeriodicBackupStatus.UploadToGlacier)}.{nameof(PeriodicBackupStatus.UploadToGlacier.Exception)}:");
+                    sb.AppendLine(status.UploadToGlacier?.Exception);
+                }
+                else
+                {
+                    sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToGlacier)} of backup task '{status.TaskId}', ran successfully in '{status.UploadToGlacier.UploadProgress.UploadTimeInMs}' ms, size: '{status.UploadToGlacier.UploadProgress.TotalInBytes}' bytes.");
+                }
+            }
+            if (status.UploadToGoogleCloud == null)
+            {
+                sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToGoogleCloud)} of backup task '{status.TaskId}' is null.");
+            }
+            else if (status.UploadToGoogleCloud.Skipped)
+            {
+                sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToGoogleCloud)} of backup task '{status.TaskId}' was skipped.");
+            }
+            else
+            {
+                if (string.IsNullOrEmpty(status.UploadToGoogleCloud.Exception) == false)
+                {
+                    sb.AppendLine($"{nameof(PeriodicBackupStatus)}.{nameof(PeriodicBackupStatus.UploadToGoogleCloud)}.{nameof(PeriodicBackupStatus.UploadToGoogleCloud.Exception)}:");
+                    sb.AppendLine(status.UploadToGoogleCloud?.Exception);
+                }
+                else
+                {
+                    sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToGoogleCloud)} of backup task '{status.TaskId}', ran successfully in '{status.UploadToGoogleCloud.UploadProgress.UploadTimeInMs}' ms, size: '{status.UploadToGoogleCloud.UploadProgress.TotalInBytes}' bytes.");
+                }
+            }
+            if (status.UploadToS3 == null)
+            {
+                sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToS3)} of backup task '{status.TaskId}' is null.");
+            }
+            else if (status.UploadToS3.Skipped)
+            {
+                sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToS3)} of backup task '{status.TaskId}' was skipped.");
+            }
+            else
+            {
+                if (string.IsNullOrEmpty(status.UploadToS3.Exception) == false)
+                {
+                    sb.AppendLine($"{nameof(PeriodicBackupStatus)}.{nameof(PeriodicBackupStatus.UploadToS3)}.{nameof(PeriodicBackupStatus.UploadToS3.Exception)}:");
+                    sb.AppendLine(status.UploadToS3?.Exception);
+                }
+                else
+                {
+                    sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToS3)} of backup task '{status.TaskId}', ran successfully in '{status.UploadToS3.UploadProgress.UploadTimeInMs}' ms, size: '{status.UploadToS3.UploadProgress.TotalInBytes}' bytes.");
+                }
+            }
+
+            return sb.ToString();
         }
     }
 }
