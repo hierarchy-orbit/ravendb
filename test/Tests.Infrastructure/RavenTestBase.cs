@@ -103,6 +103,8 @@ namespace FastTests
             if (canUseProtect == false) // fall back to a file
                 Server.ServerStore.Configuration.Security.MasterKeyPath = GetTempFileName();
 
+            Server.ServerStore.EnsureNotPassive(); // activate license so we can insert the secret key
+
             Server.ServerStore.PutSecretKey(base64Key, dbName, true);
             name = dbName;
             return Convert.ToBase64String(buffer);
@@ -633,11 +635,31 @@ namespace FastTests
             throw new TimeoutException(msg);
         }
 
-        protected async Task<T> AssertWaitForValueAsync<T>(Func<Task<T>> act, T expectedVal, int timeout = 15000, int interval = 100)
+        public static int WaitForEntriesCount(IDocumentStore store, string indexName, int minEntriesCount, string databaseName = null, TimeSpan? timeout = null, bool throwOnTimeout = true)
         {
-            var ret = await WaitForValueAsync(act, expectedVal, timeout, interval);
-            Assert.Equal(expectedVal, ret);
-            return ret;
+            timeout ??= (Debugger.IsAttached
+                ? TimeSpan.FromMinutes(15)
+                : TimeSpan.FromMinutes(1));
+
+            var sp = Stopwatch.StartNew();
+            var entriesCount = -1;
+
+            while (sp.Elapsed < timeout.Value)
+            {
+                MaintenanceOperationExecutor operations = string.IsNullOrEmpty(databaseName) == false ? store.Maintenance.ForDatabase(databaseName) : store.Maintenance;
+
+                entriesCount = operations.Send(new GetIndexStatisticsOperation(indexName)).EntriesCount;
+
+                if (entriesCount >= minEntriesCount)
+                    return entriesCount;
+
+                Thread.Sleep(32);
+            }
+
+            if (throwOnTimeout)
+                throw new TimeoutException($"It didn't get min entries count {minEntriesCount} for index {indexName}. The index has {entriesCount} entries.");
+
+            return entriesCount;
         }
 
         protected async Task<T> AssertWaitForNotNullAsync<T>(Func<Task<T>> act, int timeout = 15000, int interval = 100) where T : class
@@ -717,7 +739,7 @@ namespace FastTests
             } while (true);
         }
 
-        protected T WaitForValue<T>(Func<T> act, T expectedVal, int timeout = 15000, int interval = 16)
+        protected static T WaitForValue<T>(Func<T> act, T expectedVal, int timeout = 15000, int interval = 16)
         {
             if (Debugger.IsAttached)
                 timeout *= 100;
@@ -942,13 +964,14 @@ namespace FastTests
 
         private readonly Dictionary<(RavenServer Server, string Database), string> _serverDatabaseToMasterKey = new Dictionary<(RavenServer Server, string Database), string>();
 
-        protected void PutSecrectKeyForDatabaseInServersStore(string dbName, RavenServer ravenServer)
+        protected void PutSecrectKeyForDatabaseInServersStore(string dbName, RavenServer server)
         {
             var base64key = CreateMasterKey(out _);
             var base64KeyClone = new string(base64key.ToCharArray());
-            EnsureServerMasterKeyIsSetup(ravenServer);
-            ravenServer.ServerStore.PutSecretKey(base64key, dbName, true);
-            _serverDatabaseToMasterKey.Add((ravenServer, dbName), base64KeyClone);
+            EnsureServerMasterKeyIsSetup(server);
+            server.ServerStore.EnsureNotPassive(); // activate license so we can insert the secret key
+            server.ServerStore.PutSecretKey(base64key, dbName, true);
+            _serverDatabaseToMasterKey.Add((server, dbName), base64KeyClone);
         }
 
         protected string SetupEncryptedDatabase(out TestCertificatesHolder certificates, out byte[] masterKey, [CallerMemberName] string caller = null)

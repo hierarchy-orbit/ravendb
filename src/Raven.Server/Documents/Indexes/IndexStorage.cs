@@ -260,6 +260,18 @@ namespace Raven.Server.Documents.Indexes
                 };
             }
 
+            var entriesCount = statsTree.Read(IndexSchema.EntriesCount)?.Reader.ReadLittleEndianInt32();
+
+            if (entriesCount != null)
+                stats.EntriesCount = entriesCount.Value;
+            else
+            {
+                using (var reader = _index.IndexPersistence.OpenIndexReader(tx.InnerTransaction))
+                {
+                    stats.EntriesCount = reader.EntriesCount();
+                }
+            }
+
             if (lastIndexingTime != null)
             {
                 stats.LastIndexingTime = DateTime.FromBinary(lastIndexingTime.Reader.ReadLittleEndianInt64());
@@ -285,6 +297,20 @@ namespace Raven.Server.Documents.Indexes
             }
 
             return stats;
+        }
+
+        public int ReadMaxNumberOfOutputsPerDocument(RavenTransaction tx)
+        {
+            var statsTree = tx.InnerTransaction.ReadTree(IndexSchema.StatsTree);
+
+            var lastIndexingTime = statsTree.Read(IndexSchema.LastIndexingTimeSlice);
+
+            if (lastIndexingTime != null)
+            {
+                return statsTree.Read(IndexSchema.MaxNumberOfOutputsPerDocument).Reader.ReadLittleEndianInt32();
+            }
+
+            return 0;
         }
 
         public long ReadLastProcessedTombstoneEtag(RavenTransaction tx, string collection)
@@ -502,6 +528,9 @@ namespace Raven.Server.Documents.Indexes
                     result.MapReferenceErrors = statsTree.Increment(IndexSchema.MapReferenceErrorsSlice, stats.MapReferenceErrors);
                 }
 
+                if (stats.EntriesCount != null) // available only when tx was committed
+                    statsTree.Add(IndexSchema.EntriesCount, stats.EntriesCount.Value);
+               
                 var binaryDate = indexingTime.ToBinary();
                 using (Slice.External(context.Allocator, (byte*)&binaryDate, sizeof(long), out Slice binaryDateslice))
                     statsTree.Add(IndexSchema.LastIndexingTimeSlice, binaryDateslice);
@@ -706,6 +735,8 @@ namespace Raven.Server.Documents.Indexes
             public static readonly Slice ErrorTimestampsSlice;
 
             public static readonly Slice MaxNumberOfOutputsPerDocument;
+            
+            public static readonly Slice EntriesCount;
 
             static IndexSchema()
             {
@@ -727,6 +758,7 @@ namespace Raven.Server.Documents.Indexes
                     Slice.From(ctx, "State", ByteStringType.Immutable, out StateSlice);
                     Slice.From(ctx, "ErrorTimestamps", ByteStringType.Immutable, out ErrorTimestampsSlice);
                     Slice.From(ctx, "MaxNumberOfOutputsPerDocument", ByteStringType.Immutable, out MaxNumberOfOutputsPerDocument);
+                    Slice.From(ctx, "EntriesCount", ByteStringType.Immutable, out EntriesCount);
                 }
             }
         }

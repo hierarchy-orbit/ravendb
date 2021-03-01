@@ -631,7 +631,7 @@ namespace Raven.Server.Documents.Indexes
                 State = _indexStorage.ReadState(tx);
                 _lastQueryingTime = DocumentDatabase.Time.GetUtcNow();
                 LastIndexingTime = _indexStorage.ReadLastIndexingTime(tx);
-                MaxNumberOfOutputsPerDocument = _indexStorage.ReadStats(tx).MaxNumberOfOutputsPerDocument;
+                MaxNumberOfOutputsPerDocument = _indexStorage.ReadMaxNumberOfOutputsPerDocument(tx);
             }
         }
 
@@ -1134,6 +1134,8 @@ namespace Raven.Server.Documents.Indexes
                                 }
                                 catch (OperationCanceledException)
                                 {
+                                    Debug.Assert(_indexingProcessCancellationTokenSource.IsCancellationRequested, $"Got {nameof(OperationCanceledException)} while the index was not canceled");
+
                                     // We are here only in the case of indexing process cancellation.
                                     scope.RecordMapCompletedReason("Operation canceled.");
                                     return;
@@ -1689,6 +1691,8 @@ namespace Raven.Server.Documents.Indexes
 
                     try
                     {
+                        int? entriesCount = null;
+
                         using (InitializeIndexingWork(indexContext))
                         {
                             foreach (var work in _indexWorkers)
@@ -1711,6 +1715,8 @@ namespace Raven.Server.Documents.Indexes
                                 using (var indexWriteOperation = writeOperation.Value)
                                 {
                                     indexWriteOperation.Commit(stats);
+
+                                    entriesCount = writeOperation.Value.EntriesCount();
                                 }
 
                                 UpdateThreadAllocations(indexContext, null, null, false);
@@ -1744,6 +1750,9 @@ namespace Raven.Server.Documents.Indexes
                                     IndexPersistence.RecreateSearcher(llt.Transaction);
                                     IndexPersistence.RecreateSuggestionsSearchers(llt.Transaction);
                                 }
+
+                                if (entriesCount != null)
+                                    stats.RecordEntriesCountAfterTxCommit(entriesCount.Value);
                             };
 
                             tx.Commit();
@@ -2227,13 +2236,11 @@ namespace Raven.Server.Documents.Indexes
 
                 using (_contextPool.AllocateOperationContext(out TransactionOperationContext context))
                 using (var tx = context.OpenReadTransaction())
-                using (var reader = IndexPersistence.OpenIndexReader(tx.InnerTransaction))
                 {
                     var stats = _indexStorage.ReadStats(tx);
 
                     stats.Name = Name;
                     stats.Type = Type;
-                    stats.EntriesCount = reader.EntriesCount();
                     stats.LockMode = Definition.LockMode;
                     stats.Priority = Definition.Priority;
                     stats.State = State;

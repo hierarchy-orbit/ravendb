@@ -331,7 +331,7 @@ namespace Raven.Server.Documents.Revisions
             return true;
         }
 
-        public bool ShouldVersionOldDocument(DocumentFlags flags, BlittableJsonReaderObject oldDoc)
+        public bool ShouldVersionOldDocument(DocumentsOperationContext context, DocumentFlags flags, BlittableJsonReaderObject oldDoc, string changeVector, CollectionName collectionName = null)
         {
             if (oldDoc == null)
                 return false; // no document to version
@@ -340,7 +340,26 @@ namespace Raven.Server.Documents.Revisions
                 return false; // version already exists
 
             if (flags.Contain(DocumentFlags.Resolved))
-                return false; // we already versioned it with the a conflicted flag
+            {
+                if (Configuration == null)
+                    return false;
+                var configuration = GetRevisionsConfiguration(collectionName.Name);
+
+                if (configuration.Disabled)
+                    return false;
+
+                if (configuration.MinimumRevisionsToKeep == 0)
+                    return false;
+
+                using (Slice.From(context.Allocator, changeVector, out Slice changeVectorSlice))
+                {
+                    var table = EnsureRevisionTableCreated(context.Transaction.InnerTransaction, collectionName);
+                    // True if we already versioned it with the a conflicted flag
+                    // False if we didn't resolved the conflict locally
+
+                    return (table.ReadByKey(changeVectorSlice, out var tvr) == false);
+                }
+            }
 
             return true;
         }
@@ -484,14 +503,17 @@ namespace Raven.Server.Documents.Revisions
                     _database.ReplicationLoader.ConflictResolver.SaveLocalAsRevision(context, id);
                 }
 
+                nonPersistentFlags |= NonPersistentDocumentFlags.SkipRevisionCreation;
+                flags = flags.Strip(DocumentFlags.Revision);
+
                 if (document == null)
                 {
                     _documentsStorage.Delete(context, lowerId, id, null, lastModifiedTicks, changeVector, collectionName,
-                        nonPersistentFlags | NonPersistentDocumentFlags.SkipRevisionCreation);
+                        nonPersistentFlags, flags);
                     return;
                 }
                 _documentsStorage.Put(context, id, null, document, lastModifiedTicks, changeVector,
-                    flags.Strip(DocumentFlags.Revision), nonPersistentFlags | NonPersistentDocumentFlags.SkipRevisionCreation);
+                    flags, nonPersistentFlags);
             }
         }
 
